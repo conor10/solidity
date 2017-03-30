@@ -163,6 +163,17 @@ Json::Value formatLinkReferences(std::map<size_t, std::string> const& linkRefere
 	return ret;
 }
 
+/*
+vector<> createTargetMap()
+{
+}
+
+bool isTargetRequired(string const& _file, string const& _contract, string const& _target)
+{ 
+	return false;
+}
+*/
+
 Json::Value StandardCompiler::compileInternal(Json::Value const& _input)
 {
 	m_compilerStack.reset(false);
