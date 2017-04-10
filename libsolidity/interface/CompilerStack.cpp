@@ -38,6 +38,7 @@
 #include <libsolidity/analysis/SyntaxChecker.h>
 #include <libsolidity/codegen/Compiler.h>
 #include <libsolidity/interface/InterfaceHandler.h>
+#include <libsolidity/interface/GasEstimator.h>
 #include <libsolidity/formal/Why3Translator.h>
 
 #include <libevmasm/Exceptions.h>
@@ -840,4 +841,82 @@ string CompilerStack::computeSourceMapping(eth::AssemblyItems const& _items) con
 		prevJump = jump;
 	}
 	return ret;
+}
+
+namespace {
+
+Json::Value gasToJson(GasEstimator::GasConsumption const& _gas)
+{
+    if (_gas.isInfinite || _gas.value > std::numeric_limits<Json::LargestUInt>::max())
+	return Json::Value(Json::nullValue);
+    else
+	return Json::Value(Json::LargestUInt(_gas.value));
+}
+
+}
+
+Json::Value CompilerStack::gasEstimates(string const& _contractName) const
+{
+	if (!assemblyItems(_contractName) && !runtimeAssemblyItems(_contractName))
+		return Json::Value();
+
+	using Gas = GasEstimator::GasConsumption;
+	Json::Value output(Json::objectValue);
+
+	if (eth::AssemblyItems const* items = assemblyItems(_contractName))
+	{
+		Gas executionGas = GasEstimator::functionalEstimation(*items);
+		u256 bytecodeSize(object(_contractName).bytecode.size());
+		Gas dataGas = bytecodeSize * eth::GasCosts::createDataGas;
+
+		Json::Value creation(Json::objectValue);
+		creation["dataCost"] = gasToJson(dataGas);
+		creation["executionCost"] = gasToJson(executionGas);
+		/// TODO: implement + overload to avoid the need of +=
+		executionGas += dataGas;
+		creation["totalCost"] = gasToJson(executionGas);
+		output["creation"] = creation;
+	}
+
+	if (eth::AssemblyItems const* items = runtimeAssemblyItems(_contractName))
+	{
+		/// External functions
+		ContractDefinition const& contract = contractDefinition(_contractName);
+		Json::Value externalFunctions(Json::objectValue);
+		for (auto it: contract.interfaceFunctions())
+		{
+			string sig = it.second->externalSignature();
+			externalFunctions[sig] = gasToJson(GasEstimator::functionalEstimation(*items, sig));
+		}
+
+		if (contract.fallbackFunction())
+			externalFunctions[""] = gasToJson(GasEstimator::functionalEstimation(*items, ""));
+
+		output["external"] = externalFunctions;
+
+		/// Internal functions
+		Json::Value internalFunctions(Json::objectValue);
+		for (auto const& it: contract.definedFunctions())
+		{
+			if (it->isPartOfExternalInterface() || it->isConstructor())
+				continue;
+
+			size_t entry = functionEntryPoint(_contractName, *it);
+			GasEstimator::GasConsumption gas = GasEstimator::GasConsumption::infinite();
+			if (entry > 0)
+				gas = GasEstimator::functionalEstimation(*items, entry, *it);
+
+			FunctionType type(*it);
+			string sig = it->name() + "(";
+			auto paramTypes = type.parameterTypes();
+			for (auto it = paramTypes.begin(); it != paramTypes.end(); ++it)
+				sig += (*it)->toString() + (it + 1 == paramTypes.end() ? "" : ",");
+			sig += ")";
+			internalFunctions[sig] = gasToJson(gas);
+		}
+
+		output["internal"] = internalFunctions;
+	}
+
+	return output;
 }
